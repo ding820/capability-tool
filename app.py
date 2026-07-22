@@ -46,6 +46,7 @@ if st.button('生成能力提升名单', type='primary'):
         st.stop()
 
     with st.spinner('计算中...'):
+        not_graduated, new_entries, triggered_ids = [], [], set()
         tmp_dir = tempfile.mkdtemp()
         try:
             roster_path = os.path.join(tmp_dir, 'roster.xlsx')
@@ -73,44 +74,48 @@ if st.button('生成能力提升名单', type='primary'):
                 st.error(f'主管底表读取失败：{e}\n请确认文件包含"主管底表" Sheet。')
                 st.stop()
 
-            # 合并专家数据（花名册补充门店/职级/入职日期），只取岗位类别=='产品专家'的人
-            expert_merged = expert_orders.merge(
-                roster[roster['岗位类别'] == '产品专家'][
-                    ['工号', '员工姓名', '二级部门', '三级部门', '四级部门', '新岗位名称', '新职级', '入职日期', '岗位类别']
-                ],
-                left_on='专家工号', right_on='工号', how='inner'
-            ).drop(columns=['专家工号'])
+            try:
+                # 合并专家数据（花名册补充门店/职级/入职日期），只取岗位类别=='产品专家'的人
+                expert_merged = expert_orders.merge(
+                    roster[roster['岗位类别'] == '产品专家'][
+                        ['工号', '员工姓名', '二级部门', '三级部门', '四级部门', '新岗位名称', '新职级', '入职日期', '岗位类别']
+                    ],
+                    left_on='专家工号', right_on='工号', how='inner'
+                ).drop(columns=['专家工号'])
 
-            # 合并主管数据，并将 '姓名' rename 为 '员工姓名'
-            manager_merged = manager_raw.rename(columns={'姓名': '员工姓名'}).merge(
-                roster[['工号', '二级部门', '三级部门', '四级部门', '新岗位名称', '新职级', '入职日期']],
-                on='工号', how='inner'
-            )
-
-            # 识别专家
-            period_end_ts = pd.Timestamp(expert_period_end)
-            expert_result = identify_experts(expert_merged, period_end_ts)
-
-            # 识别主管
-            achieve_cols, target_cols = find_manager_cols(list(manager_merged.columns), quarter, year_str)
-            if not achieve_cols or not target_cols:
-                st.error(
-                    f'未在主管底表中找到 {quarter} 对应的达成/目标列。\n'
-                    f'请检查列名是否包含"{year_str}年X月"或"20{year_str}年X月"格式。'
+                # 合并主管数据，并将 '姓名' rename 为 '员工姓名'
+                manager_merged = manager_raw.rename(columns={'姓名': '员工姓名'}).merge(
+                    roster[['工号', '二级部门', '三级部门', '四级部门', '新岗位名称', '新职级', '入职日期']],
+                    on='工号', how='inner'
                 )
+
+                # 识别专家
+                period_end_ts = pd.Timestamp(expert_period_end)
+                expert_result = identify_experts(expert_merged, period_end_ts)
+
+                # 识别主管
+                achieve_cols, target_cols = find_manager_cols(list(manager_merged.columns), quarter, year_str)
+                if not achieve_cols or not target_cols:
+                    st.error(
+                        f'未在主管底表中找到 {quarter} 对应的达成/目标列。\n'
+                        f'请检查列名是否包含"{year_str}年X月"或"20{year_str}年X月"格式。'
+                    )
+                    st.stop()
+                manager_result = identify_managers(manager_merged, achieve_cols, target_cols, period_end_ts)
+
+                # 汇总触发人员
+                expert_triggered = expert_result[expert_result['触发识别']].to_dict('records')
+                manager_triggered = manager_result[manager_result['触发识别']].to_dict('records')
+                all_triggered = expert_triggered + manager_triggered
+                triggered_ids = {r['工号'] for r in all_triggered}
+
+                # 区分未出营 vs 新进入
+                prev_ids = get_previous_ids(HISTORY_PATH)
+                not_graduated = [r for r in all_triggered if r['工号'] in prev_ids]
+                new_entries = [r for r in all_triggered if r['工号'] not in prev_ids]
+            except Exception as e:
+                st.error(f'计算识别结果时出错：{e}')
                 st.stop()
-            manager_result = identify_managers(manager_merged, achieve_cols, target_cols, period_end_ts)
-
-            # 汇总触发人员
-            expert_triggered = expert_result[expert_result['触发识别'] == True].to_dict('records')
-            manager_triggered = manager_result[manager_result['触发识别'] == True].to_dict('records')
-            all_triggered = expert_triggered + manager_triggered
-            triggered_ids = {r['工号'] for r in all_triggered}
-
-            # 区分未出营 vs 新进入
-            prev_ids = get_previous_ids(HISTORY_PATH)
-            not_graduated = [r for r in all_triggered if r['工号'] in prev_ids]
-            new_entries = [r for r in all_triggered if r['工号'] not in prev_ids]
 
         finally:
             shutil.rmtree(tmp_dir)
@@ -151,12 +156,13 @@ with st.expander('初始化历史记录（首次使用时导入上期名单）')
     hist_period = st.text_input('历史周期标签（如 5月/6月）', key='hist_period')
     if st.button('导入历史'):
         if hist_file and hist_period:
-            import tempfile as _tmp
-            with _tmp.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+            with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
                 f.write(hist_file.read())
                 tmp = f.name
-            wb = openpyxl.load_workbook(tmp)
-            os.unlink(tmp)
+            try:
+                wb = openpyxl.load_workbook(tmp)
+            finally:
+                os.unlink(tmp)
             ids = []
             for sheet in wb.sheetnames:
                 ws = wb[sheet]
