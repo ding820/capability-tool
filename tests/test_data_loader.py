@@ -1,8 +1,13 @@
 # tests/test_data_loader.py
-import sys, os
+import sys
+import os
 import tempfile
+
+import pandas as pd
+from openpyxl import Workbook
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from data_loader import normalize_id
+from data_loader import normalize_id, load_roster, load_expert_orders, load_manager_data, find_manager_cols
 
 def test_normalize_strips_leading_zeros():
     assert normalize_id("084300") == "84300"
@@ -21,9 +26,6 @@ def test_normalize_handles_none():
 
 def test_normalize_handles_non_numeric_string():
     assert normalize_id("区域达成") is None
-
-import pandas as pd
-from data_loader import load_roster
 
 def test_load_roster_returns_required_columns():
     df = pd.DataFrame({
@@ -72,11 +74,8 @@ def test_load_roster_filters_active_only():
     finally:
         os.unlink(path)
 
-from data_loader import load_expert_orders
-
 def test_load_expert_orders_returns_aggregate_rows():
     """专家底表只取车系='全部'的行，即每人的合计行。"""
-    from openpyxl import Workbook
     wb = Workbook()
     ws = wb.active
     ws.title = '专家底表'
@@ -110,8 +109,6 @@ def test_load_expert_orders_returns_aggregate_rows():
     finally:
         os.unlink(path)
 
-from data_loader import load_manager_data
-
 def test_load_manager_data_returns_clean_rows():
     df = pd.DataFrame({
         '工号': ['008210', '009846', '区域达成（绩效口径）'],
@@ -130,8 +127,6 @@ def test_load_manager_data_returns_clean_rows():
         assert result.iloc[0]['工号'] == '8210'
     finally:
         os.unlink(path)
-
-from data_loader import find_manager_cols
 
 def test_find_manager_cols_q2_two_digit_year():
     cols = ['工号', '姓名', '26年4月达成', '26年4月目标（含i6）',
