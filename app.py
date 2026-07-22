@@ -161,6 +161,9 @@ with st.expander('初始化历史记录（首次使用时导入上期名单）')
                 tmp = f.name
             try:
                 wb = openpyxl.load_workbook(tmp)
+            except Exception as e:
+                st.error(f'历史文件读取失败：{e}')
+                st.stop()
             finally:
                 os.unlink(tmp)
             ids = []
