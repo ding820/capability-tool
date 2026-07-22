@@ -97,7 +97,10 @@ def build_output_excel(
 
     # 列宽自适应
     for col in ws.columns:
-        max_len = max((len(str(cell.value or '')) for cell in col), default=0)
+        max_len = max(
+            (len(str(cell.value)) for cell in col if cell.value is not None),
+            default=0,
+        )
         ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 4, 40)
 
     buf = io.BytesIO()

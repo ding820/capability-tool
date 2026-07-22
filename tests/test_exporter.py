@@ -29,6 +29,8 @@ def _sample_records():
 def test_build_output_excel_returns_bytesio():
     buf = build_output_excel('7月', '7月-8月', [_sample_records()[0]], [_sample_records()[1]])
     assert isinstance(buf, io.BytesIO)
+    assert buf.tell() == 0
+    assert len(buf.getvalue()) > 0
 
 
 def test_output_excel_has_correct_sheet():
@@ -61,3 +63,19 @@ def test_new_entries_shows_yes_and_period():
     flat = [cell.value for row in ws.iter_rows() for cell in row if cell.value]
     assert '是' in flat
     assert '7月-8月' in flat
+
+
+def test_both_lists_empty_does_not_raise():
+    buf = build_output_excel('7月', '7月-8月', [], [])
+    wb = openpyxl.load_workbook(buf)
+    ws = wb.active
+    assert ws is not None
+
+
+def test_sequence_numbers_start_at_1():
+    buf = build_output_excel('7月', '7月-8月', _sample_records(), [])
+    wb = openpyxl.load_workbook(buf)
+    ws = wb.active
+    # Row 1 = section title, row 2 = headers, row 3 = first data row
+    assert ws.cell(row=3, column=1).value == 1
+    assert ws.cell(row=4, column=1).value == 2
