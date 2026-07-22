@@ -11,6 +11,10 @@ def _is_new_employee(hire_date, period_end: pd.Timestamp) -> bool:
     return pd.Timestamp(hire_date) > cutoff
 
 
+def _rank_ok(v):
+    return v is not None and not (isinstance(v, float) and math.isnan(v))
+
+
 def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame:
     """
     识别产品专家/产品专员/高级产品专家是否进入能力提升。
@@ -21,6 +25,8 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
 
     后15%阈值分母 = 参与排名人数（非新员工）。
     高级产品专家省区后50%分母 = 省区所有岗位类别=='产品专家'的参与人数（含专员/专家/高级）。
+    Precondition: df 必须包含所有相关省区的 岗位类别=='产品专家' 人员（含专员/专家/高级），
+                  否则高级产品专家的后50%分母将不准确。
     """
     result = df.copy().reset_index(drop=True)
     result['双月合计'] = result['月1净锁单'] + result['月2净锁单']
@@ -74,9 +80,6 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
         province_part = int(row['省区参与人数'])
         store_rank_val = row['门店排名']
         province_rank_val = row['省区排名']
-
-        def _rank_ok(v):
-            return v is not None and not (isinstance(v, float) and math.isnan(v))
 
         hit = False
         reason = ''
