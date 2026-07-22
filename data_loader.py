@@ -68,6 +68,9 @@ def find_manager_cols(columns, quarter: str, year_str: str):
     同时匹配两位年（如"26年"）和四位年（如"2026年"）。
     返回 (achieve_cols, target_cols)
     """
+    year_str = str(year_str).strip()
+    if len(year_str) == 4 and year_str.startswith('20'):
+        year_str = year_str[2:]  # 自动规范化 "2026" → "26"
     months = QUARTER_MONTHS.get(quarter, [])
     year_prefixes = [f'{year_str}年', f'20{year_str}年']
 

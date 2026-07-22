@@ -1,5 +1,6 @@
 # tests/test_data_loader.py
 import sys, os
+import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from data_loader import normalize_id
 
@@ -37,15 +38,16 @@ def test_load_roster_returns_required_columns():
         '入职日期': pd.to_datetime(['2024-01-01', '2023-06-01']),
         '二级部门': ['湖北战区', '湖北战区'],
     })
-    import tempfile, os as _os
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     df.to_excel(path, index=False, sheet_name='花名册最新')
-    result = load_roster(path)
-    _os.unlink(path)
-    assert '工号' in result.columns
-    assert '四级部门' in result.columns
-    assert result['工号'].iloc[0] == '84300'
+    try:
+        result = load_roster(path)
+        assert '工号' in result.columns
+        assert '四级部门' in result.columns
+        assert result['工号'].iloc[0] == '84300'
+    finally:
+        os.unlink(path)
 
 def test_load_roster_filters_active_only():
     df = pd.DataFrame({
@@ -60,20 +62,20 @@ def test_load_roster_filters_active_only():
         '入职日期': pd.to_datetime(['2024-01-01', '2023-01-01']),
         '二级部门': ['战区', '战区'],
     })
-    import tempfile, os as _os
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     df.to_excel(path, index=False, sheet_name='花名册最新')
-    result = load_roster(path)
-    _os.unlink(path)
-    assert len(result) == 1
-    assert result.iloc[0]['员工姓名'] == 'A'
+    try:
+        result = load_roster(path)
+        assert len(result) == 1
+        assert result.iloc[0]['员工姓名'] == 'A'
+    finally:
+        os.unlink(path)
 
 from data_loader import load_expert_orders
 
 def test_load_expert_orders_returns_aggregate_rows():
     """专家底表只取车系='全部'的行，即每人的合计行。"""
-    import tempfile, os as _os
     from openpyxl import Workbook
     wb = Workbook()
     ws = wb.active
@@ -99,12 +101,14 @@ def test_load_expert_orders_returns_aggregate_rows():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     wb.save(path)
-    result = load_expert_orders(path)
-    _os.unlink(path)
-    assert len(result) == 1
-    assert result.iloc[0]['专家工号'] == '84300'
-    assert result.iloc[0]['月1净锁单'] == 3
-    assert result.iloc[0]['月2净锁单'] == 8
+    try:
+        result = load_expert_orders(path)
+        assert len(result) == 1
+        assert result.iloc[0]['专家工号'] == '84300'
+        assert result.iloc[0]['月1净锁单'] == 3
+        assert result.iloc[0]['月2净锁单'] == 8
+    finally:
+        os.unlink(path)
 
 from data_loader import load_manager_data
 
@@ -117,14 +121,15 @@ def test_load_manager_data_returns_clean_rows():
         '26年6月达成': [15, 55, None],
         '26年6月目标（不含L8）': [15, 55, None],
     })
-    import tempfile, os as _os
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     df.to_excel(path, index=False, sheet_name='主管底表')
-    result = load_manager_data(path)
-    _os.unlink(path)
-    assert len(result) == 2
-    assert result.iloc[0]['工号'] == '8210'
+    try:
+        result = load_manager_data(path)
+        assert len(result) == 2
+        assert result.iloc[0]['工号'] == '8210'
+    finally:
+        os.unlink(path)
 
 from data_loader import find_manager_cols
 
