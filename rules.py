@@ -17,97 +17,122 @@ def _rank_ok(v):
 
 def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame:
     """
-    识别产品专家/产品专员/高级产品专家是否进入能力提升。
+    识别产品专家是否进入能力提升。
 
-    df 必须包含列: 工号, 员工姓名, 四级部门(门店), 三级部门(省区/城市部),
-                   新职级, 入职日期, 月1净锁单, 月2净锁单, 新岗位名称, 岗位类别, 二级部门
-    period_end: 识别周期结束日期
+    排名规则（主键 DESC 绩效，次键 DESC 全量）：
+      rank=1 = 最好；rank 最大 = 最差
 
-    后15%阈值分母 = 参与排名人数（非新员工）。
-    高级产品专家省区后50%分母 = 省区所有岗位类别=='产品专家'的参与人数（含专员/专家/高级）。
-    Precondition: df 必须包含所有相关省区的 岗位类别=='产品专家' 人员（含专员/专家/高级），
-                  否则高级产品专家的后50%分母将不准确。
+    触发规则：
+      L12/L13 产品专员/产品专家（非高专）
+        大店（门店非新人 > 3）：门店后15%触发（≤9人取最后1名）
+        小店（门店非新人 ≤ 3）：全省统一排名后15% 且 该门店省区排名最末的那人
+      L14 高级产品专家（任一触发）
+        条件B：门店后15%（无论大店/小店）
+        条件A：全省统一排名后50%
+
+    省区排名 = 全省所有非新人产品专家（132人剔新后128人）统一排名，不按城市部分组
     """
     result = df.copy().reset_index(drop=True)
-    result['双月合计'] = result['月1净锁单'] + result['月2净锁单']
-    result['是否新员工'] = result['入职日期'].apply(lambda d: _is_new_employee(d, period_end))
 
+    result['双月合计'] = result['月1净锁单'] + result['月2净锁单']
+    if '月1净锁单_全量' in result.columns and '月2净锁单_全量' in result.columns:
+        result['双月合计_全量'] = result['月1净锁单_全量'] + result['月2净锁单_全量']
+    else:
+        result['双月合计_全量'] = result['双月合计']
+        result['月1净锁单_全量'] = result['月1净锁单']
+        result['月2净锁单_全量'] = result['月2净锁单']
+
+    result['是否新员工'] = result['入职日期'].apply(lambda d: _is_new_employee(d, period_end))
     active_mask = ~result['是否新员工']
     active = result[active_mask].copy()
 
+    # ── 参与人数 ─────────────────────────────────────────────────────
+    store_active_cnt = active.groupby('四级部门')['工号'].count()
+    result['门店总人数']   = result.groupby('四级部门')['工号'].transform('count')
+    result['门店参与人数'] = result['四级部门'].map(store_active_cnt).fillna(0).astype(int)
+
+    small_store_ids = store_active_cnt[store_active_cnt <= 3].index
+
+    # 省区参与人数 = 全省所有非新员工产品专家（大店+小店，全省统一）
+    prov_active_cnt = len(active)
+    result['省区参与人数']     = prov_active_cnt
+    result['省区全员参与人数'] = prov_active_cnt
+
+    result['门店排名']     = None
+    result['省区排名']     = None   # 全省口径（小店15%、高专50%共用）
+    result['省区全员排名'] = None   # 同上，兼容列名
+    result['触发识别']     = False
+    result['识别原因']     = ''
+
     if len(active) == 0:
-        result['省区排名'] = None
-        result['省区参与人数'] = 0
-        result['门店排名'] = None
-        result['门店参与人数'] = 0
-        result['门店总人数'] = result.groupby('四级部门')['工号'].transform('count')
-        result['触发识别'] = False
-        result['识别原因'] = ''
         return result
 
-    # 省区排名（所有岗位类别=='产品专家'，含L12/L13/L14）
-    province_rank = active.groupby('三级部门')['双月合计'].rank(method='min', ascending=True)
-    province_count = active.groupby('三级部门')['双月合计'].transform('count')
+    # ── 排名：绩效 DESC，全量 DESC ────────────────────────────────────
+    def _rank(grp: pd.DataFrame) -> pd.Series:
+        key = pd.Series(
+            list(zip(grp['双月合计'], grp['双月合计_全量'])),
+            index=grp.index,
+        )
+        return key.rank(method='min', ascending=False).astype(int)
 
-    result['省区排名'] = None
-    result['省区参与人数'] = 0
-    result.loc[active_mask, '省区排名'] = province_rank.values
-    result.loc[active_mask, '省区参与人数'] = province_count.values
+    # 门店排名
+    for _, grp in active.groupby('四级部门'):
+        ranks = _rank(grp)
+        result.loc[ranks.index, '门店排名'] = ranks
 
-    # 门店总人数（含新员工，用于判断是否≤3）
-    result['门店总人数'] = result.groupby('四级部门')['工号'].transform('count')
+    # 省区排名：全省所有非新员工产品专家作为一个统一排名池
+    prov_ranks = _rank(active)
+    result.loc[prov_ranks.index, '省区排名']     = prov_ranks
+    result.loc[prov_ranks.index, '省区全员排名'] = prov_ranks
 
-    # 门店排名（仅非新员工参与）
-    store_rank = active.groupby('四级部门')['双月合计'].rank(method='min', ascending=True)
-    store_count = active.groupby('四级部门')['双月合计'].transform('count')
+    # ── 触发判断 ──────────────────────────────────────────────────────
+    triggered = {i: False for i in result.index}
+    reasons   = {i: ''    for i in result.index}
 
-    result['门店排名'] = None
-    result['门店参与人数'] = 0
-    result.loc[active_mask, '门店排名'] = store_rank.values
-    result.loc[active_mask, '门店参与人数'] = store_count.values
-
-    triggered = []
-    reasons = []
-
-    for _, row in result.iterrows():
+    for i, row in result.iterrows():
         if row['是否新员工']:
-            triggered.append(False)
-            reasons.append('')
             continue
 
-        store_total = int(row['门店总人数'])
-        store_part = int(row['门店参与人数'])
-        province_part = int(row['省区参与人数'])
-        store_rank_val = row['门店排名']
-        province_rank_val = row['省区排名']
+        sp       = int(row['门店参与人数'])
+        pa       = int(row['省区参与人数'])
+        store_rv = row['门店排名']
+        prov_rv  = row['省区排名']
+        is_senior = (row.get('新岗位名称') == '高级产品专家')
+        is_small  = (row['四级部门'] in small_store_ids)
 
-        hit = False
-        reason = ''
-
-        if store_total <= 3:
-            # 门店≤3人，改用省区后15%
-            thresh = max(1, round(province_part * 0.15))
-            if _rank_ok(province_rank_val) and province_rank_val <= thresh:
-                hit = True
-                reason = '双月专家定单量排名在省区后15%'
+        if is_senior:
+            # 条件B：门店后15%
+            if sp > 0:
+                t = max(1, round(sp * 0.15))
+                if _rank_ok(store_rv) and int(store_rv) >= sp - t + 1:
+                    triggered[i] = True
+                    reasons[i]   = f'高级产品专家门店排名后15%'
+            # 条件A：全省后50%
+            if not triggered[i] and pa > 0:
+                t = max(1, round(pa * 0.50))
+                if _rank_ok(prov_rv) and int(prov_rv) >= pa - t + 1:
+                    triggered[i] = True
+                    reasons[i]   = f'高级产品专家省区排名后50%'
         else:
-            thresh = max(1, round(store_part * 0.15))
-            if _rank_ok(store_rank_val) and store_rank_val <= thresh:
-                hit = True
-                reason = '双月专家定单量排名在所在门店的后15%'
+            if not is_small:
+                # 大店：门店后15%
+                if sp > 0:
+                    t = max(1, round(sp * 0.15))
+                    if _rank_ok(store_rv) and int(store_rv) >= sp - t + 1:
+                        triggered[i] = True
+                        reasons[i]   = f'绩效双月定单量门店排名后15%'
+            else:
+                # 小店：省区后15%，且是该门店中省区排名最末的那一个（同一排序键，等价于门店最后1名）
+                if pa > 0 and sp > 0:
+                    t_prov  = max(1, round(pa * 0.15))
+                    hit_prov = _rank_ok(prov_rv) and int(prov_rv) >= pa - t_prov + 1
+                    hit_last = _rank_ok(store_rv) and int(store_rv) == sp
+                    if hit_prov and hit_last:
+                        triggered[i] = True
+                        reasons[i]   = f'绩效双月定单量省区排名后15%'
 
-        # 高级产品专家额外判断：省区所有专家岗后50%
-        if row.get('新岗位名称') == '高级产品专家' and not hit:
-            thresh50 = max(1, round(province_part * 0.50))
-            if _rank_ok(province_rank_val) and province_rank_val <= thresh50:
-                hit = True
-                reason = '双月高级专家定单量排名在省区专家岗位后50%'
-
-        triggered.append(hit)
-        reasons.append(reason)
-
-    result['触发识别'] = triggered
-    result['识别原因'] = reasons
+    result['触发识别'] = [triggered[i] for i in result.index]
+    result['识别原因'] = [reasons[i]   for i in result.index]
     return result
 
 
@@ -140,13 +165,16 @@ def identify_managers(df: pd.DataFrame,
         result['识别原因'] = ''
         return result
 
-    province_rank = active.groupby('三级部门')['季度达成率'].rank(method='min', ascending=True)
-    province_count = active.groupby('三级部门')['季度达成率'].transform('count')
+    # 主管全员统一排名（不按省区分组）：1=达成率最高，后10%=排名最低的那几人
+    total_active = len(active)
+    global_rank = active['季度达成率'].rank(method='min', ascending=False)
 
     result['省区排名'] = None
-    result['省区参与人数'] = 0
-    result.loc[active_mask, '省区排名'] = province_rank.values
-    result.loc[active_mask, '省区参与人数'] = province_count.values
+    result['省区参与人数'] = total_active  # 全员人数，方便展示
+    result.loc[active_mask, '省区排名'] = global_rank.values
+
+    total_thresh = max(1, round(total_active * 0.10))
+    bottom_thresh = total_active - total_thresh + 1  # 排名 >= 此值即为后10%
 
     triggered = []
     reasons = []
@@ -155,13 +183,11 @@ def identify_managers(df: pd.DataFrame,
             triggered.append(False)
             reasons.append('')
             continue
-        count = int(row['省区参与人数'])
-        thresh = max(1, round(count * 0.10))
         rank_val = row['省区排名']
         if rank_val is not None and not (isinstance(rank_val, float) and math.isnan(rank_val)):
-            if rank_val <= thresh:
+            if rank_val >= bottom_thresh:
                 triggered.append(True)
-                reasons.append('季度小组定单达成率排名后10%')
+                reasons.append(f'季度主管达成率全员排名后10%')
                 continue
         triggered.append(False)
         reasons.append('')

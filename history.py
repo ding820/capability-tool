@@ -7,20 +7,25 @@ from typing import List, Optional, Set
 def _load_data(path: str) -> dict:
     if not os.path.exists(path):
         return {'history': []}
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {'history': []}
 
 
 def save_period(path: str, period: str, ids: List[str]) -> None:
-    """保存当期名单到历史文件。"""
-    data = _load_data(path)
-    data['history'].append({'period': period, 'ids': list(ids)})
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """保存当期名单到历史文件（云端只读环境下静默失败）。"""
+    try:
+        data = _load_data(path)
+        data['history'].append({'period': period, 'ids': list(ids)})
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass  # 云端文件系统只读，忽略写入失败
 
 
 def load_last_period(path: str) -> Optional[dict]:
-    """返回最近一期历史记录，无历史时返回 None。"""
     data = _load_data(path)
     if not data['history']:
         return None
@@ -28,7 +33,6 @@ def load_last_period(path: str) -> Optional[dict]:
 
 
 def get_previous_ids(path: str) -> Set[str]:
-    """返回上期进入能力提升的工号集合。"""
     last = load_last_period(path)
     if last is None:
         return set()
