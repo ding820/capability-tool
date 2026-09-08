@@ -86,6 +86,17 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
     result.loc[prov_ranks.index, '省区全员排名'] = prov_ranks
 
     # ── 触发判断 ──────────────────────────────────────────────────────
+    # 预计算各门店的排名阈值，以处理并列末名的情况：
+    # 取已有排名列表中倒数第 t 个实际值作为阈值，而非直接用 sp - t + 1。
+    # 例：5人门店 t=1，若末两名并列 rank=4，则阈值=4，两人均满足 rank>=4。
+    store_rank_thresholds = {}
+    for _sid, _grp in active.groupby('四级部门'):
+        _sp = len(_grp)
+        _t  = max(1, round(_sp * 0.15))
+        _rs = sorted([int(v) for v in result.loc[_grp.index, '门店排名'] if _rank_ok(v)])
+        if _rs:
+            store_rank_thresholds[_sid] = _rs[max(0, len(_rs) - _t)]
+
     triggered = {i: False for i in result.index}
     reasons   = {i: ''    for i in result.index}
 
@@ -115,10 +126,10 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
                     reasons[i]   = f'高级产品专家省区排名后50%'
         else:
             if not is_small:
-                # 大店：门店后15%
+                # 大店：门店后15%（使用预计算阈值，支持并列末名）
                 if sp > 0:
-                    t = max(1, round(sp * 0.15))
-                    if _rank_ok(store_rv) and int(store_rv) >= sp - t + 1:
+                    rank_thresh = store_rank_thresholds.get(row['四级部门'], sp)
+                    if _rank_ok(store_rv) and int(store_rv) >= rank_thresh:
                         triggered[i] = True
                         reasons[i]   = f'绩效双月定单量门店排名后15%'
             else:
