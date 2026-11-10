@@ -11,6 +11,16 @@ def _is_new_employee(hire_date, period_end: pd.Timestamp) -> bool:
     return pd.Timestamp(hire_date) > cutoff
 
 
+def round_half_up(x: float) -> int:
+    """四舍五入（half-up）。
+
+    Python 内置 round() 用的是银行家舍入：round(22.5)=22、round(4.5)=4，
+    与业务口径"四舍五入"不符。后15%/50%/10%的门槛人数必须用这个函数，
+    否则偶数人数时会少取一人。
+    """
+    return math.floor(x + 0.5)
+
+
 def _rank_ok(v):
     return v is not None and not (isinstance(v, float) and math.isnan(v))
 
@@ -111,7 +121,7 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
     store_rank_max = {}
     for _sid, _grp in active.groupby('四级部门'):
         _sp = len(_grp)
-        _t  = max(1, round(_sp * 0.15))
+        _t  = max(1, round_half_up(_sp * 0.15))
         _rs = sorted([int(v) for v in result.loc[_grp.index, '门店排名'] if _rank_ok(v)])
         if _rs:
             store_rank_thresholds[_sid] = _rs[max(0, len(_rs) - _t)]
@@ -132,15 +142,15 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
         is_small  = (row['四级部门'] in small_store_ids)
 
         if is_senior:
-            # 条件B：门店后15%
+            # 条件B：门店后15%（用实际排名阈值，兼容末名并列；与导出表口径一致）
             if sp > 0:
-                t = max(1, round(sp * 0.15))
-                if _rank_ok(store_rv) and int(store_rv) >= sp - t + 1:
+                rank_thresh = store_rank_thresholds.get(row['四级部门'])
+                if _rank_ok(store_rv) and rank_thresh is not None and int(store_rv) >= rank_thresh:
                     triggered[i] = True
                     reasons[i]   = f'高级产品专家门店排名后15%'
             # 条件A：全省后50%
             if not triggered[i] and pa > 0:
-                t = max(1, round(pa * 0.50))
+                t = max(1, round_half_up(pa * 0.50))
                 if _rank_ok(prov_rv) and int(prov_rv) >= pa - t + 1:
                     triggered[i] = True
                     reasons[i]   = f'高级产品专家省区排名后50%'
@@ -156,7 +166,7 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
                 # 小店：省区后15%，且是该门店中省区排名最末的那一个
                 # 用门店实际最大排名值判断"末名"，兼容末几名并列（并列时无 rank==sp）
                 if pa > 0 and sp > 0:
-                    t_prov  = max(1, round(pa * 0.15))
+                    t_prov  = max(1, round_half_up(pa * 0.15))
                     hit_prov = _rank_ok(prov_rv) and int(prov_rv) >= pa - t_prov + 1
                     _store_max = store_rank_max.get(row['四级部门'])
                     hit_last = (_rank_ok(store_rv) and _store_max is not None
@@ -207,7 +217,7 @@ def identify_managers(df: pd.DataFrame,
     result['省区参与人数'] = total_active  # 全员人数，方便展示
     result.loc[active_mask, '省区排名'] = global_rank.values
 
-    total_thresh = max(1, round(total_active * 0.10))
+    total_thresh = max(1, round_half_up(total_active * 0.10))
     bottom_thresh = total_active - total_thresh + 1  # 排名 >= 此值即为后10%
 
     triggered = []

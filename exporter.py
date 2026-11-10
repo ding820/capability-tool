@@ -7,6 +7,8 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+from rules import round_half_up
+
 # 品牌色
 _GREEN  = '002D28'
 _GOLD   = 'CEA472'
@@ -142,7 +144,7 @@ def _build_expert_detail_sheet(wb, period_label: str,
     store_rank_max = {}
     for _sid, _rs in _store_ranks.items():
         _rs.sort()
-        _t = max(1, round(len(_rs) * 0.15))
+        _t = max(1, round_half_up(len(_rs) * 0.15))
         store_rank_thresholds[_sid] = _rs[max(0, len(_rs) - _t)]
         store_rank_max[_sid] = _rs[-1]
 
@@ -163,9 +165,9 @@ def _build_expert_detail_sheet(wb, period_label: str,
         is_small     = store_part <= 3
 
         # 阈值计算（后15%/50% = 排名 >= total - thresh + 1）
-        thresh15_store = max(1, round(store_part * 0.15)) if store_part else None
-        thresh15_prov  = max(1, round(prov_part * 0.15)) if prov_part else None
-        thresh50_prov  = max(1, round(prov_part * 0.50)) if is_senior and prov_part else None
+        thresh15_store = max(1, round_half_up(store_part * 0.15)) if store_part else None
+        thresh15_prov  = max(1, round_half_up(prov_part * 0.15)) if prov_part else None
+        thresh50_prov  = max(1, round_half_up(prov_part * 0.50)) if is_senior and prov_part else None
 
         bottom15_store = store_part - thresh15_store + 1 if thresh15_store else None
         bottom15_prov  = prov_part  - thresh15_prov  + 1 if thresh15_prov  else None
@@ -269,7 +271,7 @@ def _build_manager_detail_sheet(wb, period_label: str,
         triggered = rec.get('触发识别', False)
         prov_part = rec.get('省区参与人数', 0) or 0
         prov_rank = rec.get('省区排名')
-        thresh10  = max(1, round(prov_part * 0.10)) if prov_part else None
+        thresh10  = max(1, round_half_up(prov_part * 0.10)) if prov_part else None
 
         rate = rec.get('季度达成率', '')
         if rate != '' and rate is not None:

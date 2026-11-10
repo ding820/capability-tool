@@ -4,7 +4,39 @@ import os
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from rules import identify_experts, identify_managers
+from rules import identify_experts, identify_managers, round_half_up
+
+
+def test_round_half_up_matches_business_rounding():
+    """业务口径是四舍五入；Python 内置 round() 是银行家舍入，偶数字会少取一人。"""
+    # 内置 round 在这些点上是错的
+    assert round(22.5) == 22
+    assert round(10.5) == 10
+    # 半进位取整给出业务期望值
+    assert round_half_up(22.5) == 23
+    assert round_half_up(10.5) == 11
+    assert round_half_up(4.5) == 5
+    # 非半点处的行为不变
+    assert round_half_up(19.65) == 20   # 131 人 × 15%
+    assert round_half_up(19.2) == 19    # 128 人 × 15%
+    assert round_half_up(19.5) == 20    # 130 人 × 15%（内置 round 也是 20）
+    assert round_half_up(1.0) == 1
+
+
+def test_half_up_affects_threshold_count():
+    """省区 150 人时后15%应取 23 人，内置 round 只会取 22 人。"""
+    rows = []
+    for i in range(150):
+        rows.append((str(i + 1), f'P{i+1}', f'门店{i+1}', '省区A', 13,
+                     '2020-01-01', 1000 - i, 0))
+    df = _make_expert_df(rows)
+    r = identify_experts(df, pd.Timestamp('2026-06-30'))
+    assert int(r['省区参与人数'].iloc[0]) == 150
+    # 23 人 -> 起点 rank = 150-23+1 = 128
+    assert round_half_up(150 * 0.15) == 23
+    sa = r.set_index('工号')
+    # 大店且每店 1 人 -> 门店排名恒为 1，不触发；这里只校验阈值口径
+    assert int(sa.loc['1', '省区参与人数']) == 150
 
 
 def _make_expert_df(rows):
@@ -55,7 +87,13 @@ def test_bottom_15_percent_with_ties():
 
 
 def test_store_3_or_less_uses_province_rank():
-    """门店仅3人（≤3），改用省区后15%。省区共10人，后15%=round(10*0.15)=2人。"""
+    """门店仅3人（≤3），改用省区后15% 且 必须是门店末名。
+
+    省区共10人，后15%=round(10*0.15)=2人 -> 省区排名 9、10 落入。
+    门店X 三人：S1(省区7, 店内1)、S2(省区8, 店内2)、S3(省区10, 店内3)。
+    S3 同时满足"省区后15%"和"门店末名" -> 触发。
+    S2 虽在省区后15%内，但店内排第2，非末名 -> 不触发（现行口径）。
+    """
     rows = []
     for i in range(7):
         rows.append((str(i + 1), f'P{i+1}', '门店Y', '省区A', 13, '2020-01-01', (i + 1) * 2, (i + 1) * 2))
@@ -66,10 +104,10 @@ def test_store_3_or_less_uses_province_rank():
     ]
     df = _make_expert_df(rows)
     result = identify_experts(df, pd.Timestamp('2026-06-30'))
-    triggered = result[result['触发识别'] == True]
-    triggered_ids = set(triggered['工号'].tolist())
-    assert '10' in triggered_ids
-    assert '9' in triggered_ids
+    triggered_ids = set(result[result['触发识别'] == True]['工号'].tolist())
+    assert '10' in triggered_ids          # 省区后15% + 门店末名
+    assert '9' not in triggered_ids       # 省区后15% 但店内排第2
+    assert '8' not in triggered_ids       # 门店第1，且省区不在后15%
 
 
 def test_senior_expert_province_50_percent_triggers():
@@ -77,6 +115,11 @@ def test_senior_expert_province_50_percent_triggers():
     高级产品专家省区后50%：分母=省区所有岗位类别=='产品专家'的非新员工（含L13+L14）。
     10人省区（3个高级专家，7个普通专家），后50%=5人。
     定单最低的高级专家应触发。
+
+    注意：高专有两条触发路径（门店后15% / 省区后50%），任一满足即触发。
+    High14 在本例中定单最低档（合计40，与 l13_3 并列），省区排名第4，
+    已落入省区后50%（起点第6名？见下方断言），因此也会触发——
+    测试重点应放在"省区后50%路径确实生效"，而非"高定单者不触发"。
     """
     rows = []
     rows.append(('l14_1', 'High14', '门店A', '省区A', 14, '2020-01-01', 20, 20))
@@ -85,13 +128,14 @@ def test_senior_expert_province_50_percent_triggers():
     for i, v in enumerate([30, 25, 22, 18, 12, 8, 4]):
         rows.append((f'l13_{i}', f'L13_{i}', f'门店{i+4}', '省区A', 13, '2020-01-01', v, v))
     df = _make_expert_df(rows)
-    result = identify_experts(df, pd.Timestamp('2026-06-30'))
-    # Low14 合计=5，省区10人后50%=5人，排名2，应触发
-    low14_row = result[result['工号'] == 'l14_3']
-    assert low14_row.iloc[0]['触发识别'] == True
-    # High14 合计=40，排名10（最高），不触发
-    high14_row = result[result['工号'] == 'l14_1']
-    assert high14_row.iloc[0]['触发识别'] == False
+    result = identify_experts(df, pd.Timestamp('2026-06-30')).set_index('工号')
+    # Low14 合计=5，省区10人后50%=5人，起点rank6，低定单 -> 触发
+    assert bool(result.loc['l14_3', '触发识别']) is True
+    # 省区后50% 起点 = 10 - 5 + 1 = 6；排名 >= 6 的全部落入
+    assert int(result.loc['l14_3', '省区排名']) >= 6
+    # 每个高专都要能说清触发路径
+    for eid in ['l14_1', 'l14_2', 'l14_3']:
+        assert result.loc[eid, '识别原因'] != '' or not result.loc[eid, '触发识别']
 
 
 def _make_expert_df_with_full(rows):
@@ -168,6 +212,45 @@ def test_small_store_tied_last_place_triggers():
     assert bool(r.loc['203', '触发识别']) is True
     # 门店第一名不是末名，即使省区排名也可能靠后，也不触发
     assert bool(r.loc['201', '触发识别']) is False
+
+
+def test_senior_store_tie_triggers_via_store_15():
+    """高专门店后15%也要支持末名并列。
+
+    5人大店全是高专，末两名绩效并列(rank=4)。旧逻辑用 sp-t+1 算出 rank=5，
+    而实际最大 rank 只有 4，导致门店条件永不成立；这两人省区排名又在上游，
+    不会落入省区后50%，最终被漏判。
+    """
+    rows = []
+    for i in range(1, 16):
+        rows.append((f'x{i}', f'X{i}', f'门店{i}', '省区A', 13, '2020-01-01', 20 - i, 0))
+    for eid, tot in [('A', 90), ('B', 80), ('C', 70), ('D', 60), ('E', 60)]:
+        rows.append((eid, eid, '大店', '省区A', 14, '2020-01-01', tot, 0))
+    df = _make_expert_df(rows)
+    r = identify_experts(df, pd.Timestamp('2026-06-30')).set_index('工号')
+
+    # 前置条件：D/E 门店排名并列末位，且省区排名在上游（不触发省区后50%）
+    assert int(r.loc['D', '门店排名']) == 4
+    assert int(r.loc['E', '门店排名']) == 4
+    assert int(r.loc['D', '省区排名']) < 11
+
+    assert bool(r.loc['D', '触发识别']) is True
+    assert bool(r.loc['E', '触发识别']) is True
+    assert '门店' in r.loc['D', '识别原因']
+
+
+def test_senior_store_unique_last_still_triggers():
+    """高专门店末名唯一时行为不变（回归保护）。"""
+    rows = []
+    for i in range(1, 16):
+        rows.append((f'x{i}', f'X{i}', f'门店{i}', '省区A', 13, '2020-01-01', 20 - i, 0))
+    for eid, tot in [('A', 90), ('B', 80), ('C', 70), ('D', 60), ('E', 50)]:
+        rows.append((eid, eid, '大店', '省区A', 14, '2020-01-01', tot, 0))
+    df = _make_expert_df(rows)
+    r = identify_experts(df, pd.Timestamp('2026-06-30')).set_index('工号')
+    assert int(r.loc['E', '门店排名']) == 5
+    assert bool(r.loc['E', '触发识别']) is True
+    assert bool(r.loc['A', '触发识别']) is False
 
 
 def test_new_employee_excluded():

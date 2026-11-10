@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import os, tempfile, shutil
 from data_loader import load_roster, load_expert_orders, load_expert_vehicles, load_manager_data, find_manager_cols, load_prev_list, format_display_id
-from rules import identify_experts, identify_managers
+from rules import identify_experts, identify_managers, round_half_up
 from history import save_period, get_previous_ids
 from exporter import build_output_excel
 
@@ -440,12 +440,12 @@ if st.button('生成能力提升名单', type='primary'):
 
             if is_small:
                 thresh_s_label = '（小店→看省区）'
-                thresh_p_label = f'后{max(1,round(prov_part*0.15))}名' if prov_part else ''
+                thresh_p_label = f'后{max(1,round_half_up(prov_part*0.15))}名' if prov_part else ''
             else:
-                thresh_s_label = f'后{max(1,round(store_part*0.15))}名' if store_part else ''
+                thresh_s_label = f'后{max(1,round_half_up(store_part*0.15))}名' if store_part else ''
                 thresh_p_label = ''
 
-            thresh50_label = f'后{max(1,round(prov_all*0.50))}名' if is_senior and prov_all else ''
+            thresh50_label = f'后{max(1,round_half_up(prov_all*0.50))}名' if is_senior and prov_all else ''
 
             rows.append({
                 '标记':                  '🟡触发' if triggered else ('🔘新员工' if is_new else ''),
@@ -507,7 +507,7 @@ if st.button('生成能力提升名单', type='primary'):
             triggered = rec.get('触发识别', False)
             prov_part = rec.get('省区参与人数') or 0
             prov_rank = rec.get('省区排名')
-            thresh10  = max(1, round(prov_part * 0.10)) if prov_part else ''
+            thresh10  = max(1, round_half_up(prov_part * 0.10)) if prov_part else ''
 
             rate = rec.get('季度达成率', '')
             try:
