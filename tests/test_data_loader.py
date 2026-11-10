@@ -109,6 +109,93 @@ def test_load_expert_orders_returns_aggregate_rows():
     finally:
         os.unlink(path)
 
+def _write_expert_sheet(path, rows):
+    """按真实专家底表结构写文件（第 1 行大标题，第 2 行字段名，之后数据）。
+    rows: list of (工号, 姓名, 车系, 月1净锁单, 月2净锁单)
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '专家底表'
+    header1 = ['区域', '销售部', '门店', '专家姓名', '专家工号', '车系',
+               '当前周期'] + [''] * 14 + ['对比周期'] + [''] * 14 + ['环比'] + [''] * 4
+    header2 = ['区域', '销售部', '门店', '专家姓名', '专家工号', '车系',
+               '跟进量', '目标', '达成率%', '线下线索', '目标', '达成率%',
+               '新增排程', '目标', '达成率%', '试驾量', '目标', '达成率%',
+               '净锁单', '目标', '达成率%',
+               '跟进量', '目标', '达成率%', '线下线索', '目标', '达成率%',
+               '新增排程', '目标', '达成率%', '试驾量', '目标', '达成率%',
+               '净锁单', '目标', '达成率%',
+               '跟进量', '线下线索', '新增排程', '试驾量', '净锁单']
+    ws.append(header1)
+    ws.append(header2)
+    for eid, name, series, m1, m2 in rows:
+        rec = ['湖北战区', '', '', name, eid, series]
+        # 第 7..21 列：当前周期各指标，净锁单在第 19 列（0-based 18）
+        rec += [''] * 12       # 跟进量..试驾量 目标/达成率
+        rec += [m1, '', '']    # 净锁单 目标 达成率
+        rec += [''] * 12       # 对比周期
+        rec += [m2, '', '']
+        rec += [''] * 5
+        ws.append(rec)
+    wb.save(path)
+
+
+def test_full_volume_comes_from_all_series_row():
+    """全量 = 车系"全部"那一行；绩效在未剔除时也等于"全部"。"""
+    rows = [
+        ('084300', '丁琦', '全部', 100, 80),
+        ('084300', '丁琦', 'W04', 60, 50),
+        ('084300', '丁琦', 'W05', 40, 30),
+    ]
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    _write_expert_sheet(path, rows)
+    try:
+        r = load_expert_orders(path)
+        assert len(r) == 1
+        assert r.iloc[0]['月1净锁单'] == 100
+        assert r.iloc[0]['月1净锁单_全量'] == 100
+        assert r.iloc[0]['月2净锁单_全量'] == 80
+    finally:
+        os.unlink(path)
+
+
+def test_performance_equals_all_minus_excluded_series():
+    """剔除非绩效车型后：绩效 = "全部" - 被剔除车系；全量仍取"全部"。"""
+    rows = [
+        ('084300', '丁琦', '全部', 100, 80),
+        ('084300', '丁琦', 'W04', 60, 50),
+        ('084300', '丁琦', 'W05', 40, 30),
+    ]
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    _write_expert_sheet(path, rows)
+    try:
+        r = load_expert_orders(path, exclude_month1=['W04'], exclude_month2=['W04'])
+        # 绩效：100 - 60 = 40 ；80 - 50 = 30
+        assert r.iloc[0]['月1净锁单'] == 40
+        assert r.iloc[0]['月2净锁单'] == 30
+        # 全量不受剔除影响
+        assert r.iloc[0]['月1净锁单_全量'] == 100
+        assert r.iloc[0]['月2净锁单_全量'] == 80
+    finally:
+        os.unlink(path)
+
+
+def test_full_volume_survives_when_no_detail_rows():
+    """底表只有"全部"行时，全量仍应等于"全部"，不能退化成 0。"""
+    rows = [('084300', '丁琦', '全部', 100, 80)]
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    _write_expert_sheet(path, rows)
+    try:
+        r = load_expert_orders(path)
+        assert r.iloc[0]['月1净锁单_全量'] == 100
+        assert r.iloc[0]['月2净锁单_全量'] == 80
+    finally:
+        os.unlink(path)
+
+
 def test_load_manager_data_returns_clean_rows():
     df = pd.DataFrame({
         '工号': ['008210', '009846', '区域达成（绩效口径）'],

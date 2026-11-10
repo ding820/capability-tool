@@ -86,6 +86,82 @@ def test_bottom_15_percent_with_ties():
     assert '5' in triggered_ids
 
 
+def test_small_store_takes_worst_province_rank_in_store():
+    """小店取「本店内省区排名最末」的那一个，而非「门店排名末位」。
+
+    3 人小店，省区共 131 人（后15%起点=112）。
+    三人省区排名分别为 110 / 113 / 131：
+      - 110 不在后15%
+      - 113 在后15%，但店内还有更差的 131
+      - 131 是店内省区排名最末 -> 只有他触发
+    """
+    rows = []
+    for i in range(1, 129):
+        rows.append((f'b{i}', f'B{i}', f'大店{i}', '省区A', 13, '2020-01-01', 400 - i, 0))
+    rows += [
+        ('S1', 'S1', '小店X', '省区A', 13, '2020-01-01', 290, 0),
+        ('S2', 'S2', '小店X', '省区A', 13, '2020-01-01', 288, 0),
+        ('S3', 'S3', '小店X', '省区A', 13, '2020-01-01', 5, 0),
+    ]
+    df = _make_expert_df(rows)
+    df['月1净锁单_全量'] = df['月1净锁单']
+    df['月2净锁单_全量'] = 0
+    r = identify_experts(df, pd.Timestamp('2026-06-30')).set_index('工号')
+    assert int(r.loc['S3', '省区参与人数']) == 131
+    assert int(r.loc['S3', '省区排名']) == 131
+    assert bool(r.loc['S3', '触发识别']) is True
+    assert bool(r.loc['S2', '触发识别']) is False
+    assert bool(r.loc['S1', '触发识别']) is False
+
+
+def test_small_store_tie_broken_by_full_volume():
+    """同一小店两人绩效并列、省区排名相同，用全量区分谁更靠后，只取那一个。
+
+    两人绩效都是 500，全量分别为 600 和 300 -> 省区排名 113 与 114。
+    店内省区排名最末的是 114 那个人 -> 只有他触发。
+    """
+    rows = []
+    for i in range(1, 129):
+        rows.append((f'b{i}', f'B{i}', f'大店{i}', '省区A', 13, '2020-01-01', 400 - i, 0))
+    rows += [
+        ('T1', 'T1', '小店X', '省区A', 13, '2020-01-01', 500, 0),
+        ('T2', 'T2', '小店X', '省区A', 13, '2020-01-01', 500, 0),
+        ('T3', 'T3', '小店X', '省区A', 13, '2020-01-01', 5, 0),
+    ]
+    df = _make_expert_df(rows)
+    df['月1净锁单_全量'] = df['月1净锁单']
+    df['月2净锁单_全量'] = 0
+    df.loc[df['工号'] == 'T1', '月1净锁单_全量'] = 600
+    df.loc[df['工号'] == 'T2', '月1净锁单_全量'] = 300
+    df.loc[df['工号'] == 'T3', '月1净锁单_全量'] = 5
+
+    r = identify_experts(df, pd.Timestamp('2026-06-30')).set_index('工号')
+    # 全量把绩效并列的两人拆开
+    assert int(r.loc['T1', '省区排名']) < int(r.loc['T2', '省区排名'])
+    assert int(r.loc['T2', '省区全量排名']) > int(r.loc['T1', '省区全量排名'])
+    # T3 仍然是店内省区排名最末（131），由它触发
+    assert bool(r.loc['T3', '触发识别']) is True
+
+
+def test_small_store_worst_is_outside_bottom15_no_trigger():
+    """店内省区排名最末的那个人若仍不在省区后15%，全店都不触发。"""
+    rows = []
+    for i in range(1, 11):
+        rows.append((f'b{i}', f'B{i}', f'大店{i}', '省区A', 13, '2020-01-01', 1000 - i * 10, 0))
+    # 小店三人省区排名 1/2/3，远不在后15%（10人的后15% = 2人，起点 rank 9）
+    rows += [
+        ('S1', 'S1', '小店X', '省区A', 13, '2020-01-01', 990, 0),
+        ('S2', 'S2', '小店X', '省区A', 13, '2020-01-01', 980, 0),
+        ('S3', 'S3', '小店X', '省区A', 13, '2020-01-01', 970, 0),
+    ]
+    df = _make_expert_df(rows)
+    df['月1净锁单_全量'] = df['月1净锁单']
+    df['月2净锁单_全量'] = 0
+    r = identify_experts(df, pd.Timestamp('2026-06-30')).set_index('工号')
+    assert int(r.loc['S3', '省区排名']) < 9
+    assert bool(r.loc['S3', '触发识别']) is False
+
+
 def test_store_3_or_less_uses_province_rank():
     """门店仅3人（≤3），改用省区后15% 且 必须是门店末名。
 

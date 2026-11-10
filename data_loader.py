@@ -102,9 +102,14 @@ def load_expert_orders(path: str,
                        exclude_month2: list = None) -> pd.DataFrame:
     """
     读取专家底表。
+
+    口径定义（业务确认）：
+      全量 = 车系为"全部"的那一行（就是所有车型的合计）
+      绩效 = 全量 - 非绩效车型（即"全部"减去被剔除的车系）
+
     返回列: 专家工号, 专家姓名,
-            月1净锁单, 月2净锁单          （绩效口径：剔除指定车型后；无剔除则取"全部"合计行）
-            月1净锁单_全量, 月2净锁单_全量  （全量口径：所有车型之和，不受剔除影响）
+            月1净锁单, 月2净锁单          （绩效口径）
+            月1净锁单_全量, 月2净锁单_全量  （全量口径 = "全部"行，不受剔除影响）
     """
     df = pd.read_excel(path, sheet_name=sheet_name, header=1)
     df = df.rename(columns={'净锁单': '月1净锁单', '净锁单.1': '月2净锁单'})
@@ -113,45 +118,44 @@ def load_expert_orders(path: str,
     df['月1净锁单'] = pd.to_numeric(df['月1净锁单'], errors='coerce').fillna(0)
     df['月2净锁单'] = pd.to_numeric(df['月2净锁单'], errors='coerce').fillna(0)
 
-    # 全量合计：从明细行（去掉"全部"汇总行）按工号汇总
-    df_det = df[df['车系'].astype(str).str.strip() != '全部'].copy()
-    all_m1 = df_det.groupby('专家工号', as_index=False).agg(
-        专家姓名=('专家姓名', 'first'), 月1净锁单_全量=('月1净锁单', 'sum'))
-    all_m2 = df_det.groupby('专家工号', as_index=False).agg(
-        月2净锁单_全量=('月2净锁单', 'sum'))
-    all_total = all_m1.merge(all_m2, on='专家工号', how='outer')
-    all_total['月1净锁单_全量'] = all_total['月1净锁单_全量'].fillna(0)
-    all_total['月2净锁单_全量'] = all_total['月2净锁单_全量'].fillna(0)
+    df['_车系'] = df['车系'].astype(str).str.strip()
+    df_all = df[df['_车系'] == '全部'].copy()
+    df_det = df[df['_车系'] != '全部'].copy()
+
+    # 全量 = "全部"汇总行；底表缺该行时按明细求和兜底
+    if len(df_all) > 0:
+        full = (df_all[['专家工号', '专家姓名', '月1净锁单', '月2净锁单']]
+                .drop_duplicates(subset=['专家工号'], keep='first')
+                .rename(columns={'月1净锁单': '月1净锁单_全量',
+                                 '月2净锁单': '月2净锁单_全量'}))
+    else:
+        full = (df_det.groupby('专家工号', as_index=False)
+                .agg(专家姓名=('专家姓名', 'first'),
+                     月1净锁单_全量=('月1净锁单', 'sum'),
+                     月2净锁单_全量=('月2净锁单', 'sum')))
 
     if not exclude_month1 and not exclude_month2:
-        # 绩效口径：使用"全部"合计行
-        df_all = df[df['车系'] == '全部'].copy()
-        perf = (df_all[['专家工号', '专家姓名', '月1净锁单', '月2净锁单']]
-                .drop_duplicates(subset=['专家工号'], keep='first'))
-        result = perf.merge(
-            all_total[['专家工号', '月1净锁单_全量', '月2净锁单_全量']],
-            on='专家工号', how='left')
-        result['月1净锁单_全量'] = result['月1净锁单_全量'].fillna(result['月1净锁单'])
-        result['月2净锁单_全量'] = result['月2净锁单_全量'].fillna(result['月2净锁单'])
+        # 未剔除非绩效车型：绩效 = 全量
+        perf = full[['专家工号', '专家姓名', '月1净锁单_全量', '月2净锁单_全量']].copy()
+        perf['月1净锁单'] = perf['月1净锁单_全量']
+        perf['月2净锁单'] = perf['月2净锁单_全量']
     else:
+        # 绩效 = 全部 - 被剔除车系
         excl1 = set(exclude_month1 or [])
         excl2 = set(exclude_month2 or [])
-        m1 = (df_det[~df_det['车系'].astype(str).isin(excl1)]
-              .groupby('专家工号', as_index=False)
-              .agg(专家姓名=('专家姓名', 'first'), 月1净锁单=('月1净锁单', 'sum')))
-        m2 = (df_det[~df_det['车系'].astype(str).isin(excl2)]
-              .groupby('专家工号', as_index=False)
-              .agg(月2净锁单=('月2净锁单', 'sum')))
-        perf = m1.merge(m2, on='专家工号', how='outer')
-        perf['月1净锁单'] = perf['月1净锁单'].fillna(0)
-        perf['月2净锁单'] = perf['月2净锁单'].fillna(0)
-        result = perf.merge(
-            all_total[['专家工号', '月1净锁单_全量', '月2净锁单_全量']],
-            on='专家工号', how='left')
-        result['月1净锁单_全量'] = result['月1净锁单_全量'].fillna(0)
-        result['月2净锁单_全量'] = result['月2净锁单_全量'].fillna(0)
+        m1 = (df_det[df_det['_车系'].isin(excl1)]
+              .groupby('专家工号')['月1净锁单'].sum().rename('_剔1'))
+        m2 = (df_det[df_det['_车系'].isin(excl2)]
+              .groupby('专家工号')['月2净锁单'].sum().rename('_剔2'))
+        perf = full[['专家工号', '专家姓名', '月1净锁单_全量', '月2净锁单_全量']].copy()
+        perf = perf.merge(m1, on='专家工号', how='left')
+        perf = perf.merge(m2, on='专家工号', how='left')
+        perf['月1净锁单'] = perf['月1净锁单_全量'] - perf['_剔1'].fillna(0)
+        perf['月2净锁单'] = perf['月2净锁单_全量'] - perf['_剔2'].fillna(0)
+        perf = perf[['专家工号', '专家姓名', '月1净锁单', '月2净锁单',
+                     '月1净锁单_全量', '月2净锁单_全量']]
 
-    return result.reset_index(drop=True)
+    return perf.reset_index(drop=True)
 
 
 def load_manager_data(path: str) -> pd.DataFrame:

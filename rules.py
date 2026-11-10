@@ -119,6 +119,7 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
     # 例：5人门店 t=1，若末两名并列 rank=4，则阈值=4，两人均满足 rank>=4。
     store_rank_thresholds = {}
     store_rank_max = {}
+    store_prov_rank_max = {}
     for _sid, _grp in active.groupby('四级部门'):
         _sp = len(_grp)
         _t  = max(1, round_half_up(_sp * 0.15))
@@ -126,6 +127,9 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
         if _rs:
             store_rank_thresholds[_sid] = _rs[max(0, len(_rs) - _t)]
             store_rank_max[_sid] = _rs[-1]
+        _prs = [int(v) for v in result.loc[_grp.index, '省区排名'] if _rank_ok(v)]
+        if _prs:
+            store_prov_rank_max[_sid] = max(_prs)
 
     triggered = {i: False for i in result.index}
     reasons   = {i: ''    for i in result.index}
@@ -163,14 +167,14 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
                         triggered[i] = True
                         reasons[i]   = f'绩效双月定单量门店排名后15%'
             else:
-                # 小店：省区后15%，且是该门店中省区排名最末的那一个
-                # 用门店实际最大排名值判断"末名"，兼容末几名并列（并列时无 rank==sp）
+                # 小店：省区后15%，且必须是本店内省区排名最末的那一个。
+                # 「最末」用省区排名判断（与排名同源），并用实际最大值兼容并列。
                 if pa > 0 and sp > 0:
                     t_prov  = max(1, round_half_up(pa * 0.15))
                     hit_prov = _rank_ok(prov_rv) and int(prov_rv) >= pa - t_prov + 1
-                    _store_max = store_rank_max.get(row['四级部门'])
-                    hit_last = (_rank_ok(store_rv) and _store_max is not None
-                                and int(store_rv) == _store_max)
+                    _store_prov_max = store_prov_rank_max.get(row['四级部门'])
+                    hit_last = (_rank_ok(prov_rv) and _store_prov_max is not None
+                                and int(prov_rv) == _store_prov_max)
                     if hit_prov and hit_last:
                         triggered[i] = True
                         reasons[i]   = f'绩效双月定单量省区排名后15%'

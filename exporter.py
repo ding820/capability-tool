@@ -142,11 +142,22 @@ def _build_expert_detail_sheet(wb, period_label: str,
             _store_ranks.setdefault(_sid, []).append(int(_rv))
     store_rank_thresholds = {}
     store_rank_max = {}
+    store_prov_rank_max = {}
     for _sid, _rs in _store_ranks.items():
         _rs.sort()
         _t = max(1, round_half_up(len(_rs) * 0.15))
         store_rank_thresholds[_sid] = _rs[max(0, len(_rs) - _t)]
         store_rank_max[_sid] = _rs[-1]
+    # 店内省区排名最大值（小店判定"本店省区排名最末"用）
+    for rec in expert_records:
+        if rec.get('是否新员工'):
+            continue
+        _sid = rec.get('四级部门', '')
+        _prv = rec.get('省区排名')
+        if _rank_ok(_prv):
+            _v = int(_prv)
+            if _sid not in store_prov_rank_max or _v > store_prov_rank_max[_sid]:
+                store_prov_rank_max[_sid] = _v
 
     for i, rec in enumerate(expert_records, 1):
         is_new    = rec.get('是否新员工', False)
@@ -177,12 +188,11 @@ def _build_expert_detail_sheet(wb, period_label: str,
 
         if is_small:
             hit_store15 = False
-            # 小店：省区后15% 且 门店最后一名（两个条件同时满足）
+            # 小店：省区后15% 且 本店内省区排名最末（与 rules.py 一致）
             hit_prov15  = (_rank_ok(prov_rank) and bottom15_prov is not None
                            and int(prov_rank) >= bottom15_prov
-                           and _rank_ok(store_rank)
-                           and store_rank_max.get(rec.get('四级部门', '')) is not None
-                           and int(store_rank) == store_rank_max[rec.get('四级部门', '')])
+                           and store_prov_rank_max.get(rec.get('四级部门', '')) is not None
+                           and int(prov_rank) == store_prov_rank_max[rec.get('四级部门', '')])
         else:
             # 用实际排名阈值，与 rules.py 一致（支持并列末名）
             hit_store15 = (_rank_ok(store_rank) and _sr_thresh is not None
