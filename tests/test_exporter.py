@@ -79,3 +79,77 @@ def test_sequence_numbers_start_at_1():
     # Row 1 = section title, row 2 = headers, row 3 = first data row
     assert ws.cell(row=3, column=1).value == 1
     assert ws.cell(row=4, column=1).value == 2
+
+
+def _expert_detail_sheet(records):
+    buf = build_output_excel('7月', '7月-8月', [], [], expert_records=records)
+    wb = openpyxl.load_workbook(buf)
+    ws = wb['7月过程数据-专家']
+    headers = [c.value for c in ws[1]]
+    return ws, headers, {h: i for i, h in enumerate(headers)}
+
+
+def test_expert_sheet_has_full_volume_rank_columns():
+    """过程数据-专家应包含全量定单与全量排名列，便于核对并列时的先后。"""
+    _, _, idx = _expert_detail_sheet([{
+        '工号': '1001', '员工姓名': '张三', '四级部门': '门店X',
+        '月1净锁单': 5, '月2净锁单': 5, '双月合计': 10,
+        '月1净锁单_全量': 50, '月2净锁单_全量': 0, '双月合计_全量': 50,
+        '门店参与人数': 3, '门店排名': 2, '门店全量排名': 2,
+        '省区参与人数': 131, '省区排名': 113, '省区全量排名': 113,
+        '门店排名基准': '绩效并列→比全量', '省区排名基准': '绩效并列→比全量',
+    }])
+    for col in ['双月全量合计', '门店全量排名', '省区全量排名',
+                '门店排名基准', '省区排名基准']:
+        assert col in idx, f'缺少列: {col}'
+
+
+def test_expert_sheet_marks_rank_basis_only_on_ties():
+    """并列行标出排名基准，非并列行留空。"""
+    ws, _, idx = _expert_detail_sheet([
+        {'工号': '1001', '员工姓名': '张三', '四级部门': '门店X',
+         '双月合计': 10, '双月合计_全量': 50,
+         '门店参与人数': 3, '门店排名': 1, '门店全量排名': 1,
+         '省区参与人数': 131, '省区排名': 112, '省区全量排名': 112,
+         '门店排名基准': '绩效并列→比全量', '省区排名基准': '绩效并列→比全量'},
+        {'工号': '1002', '员工姓名': '李四', '四级部门': '门店Y',
+         '双月合计': 8, '双月合计_全量': 80,
+         '门店参与人数': 5, '门店排名': 2, '门店全量排名': 1,
+         '省区参与人数': 131, '省区排名': 120, '省区全量排名': 50,
+         '门店排名基准': '', '省区排名基准': ''},
+    ])
+    assert ws.cell(row=2, column=idx['门店排名基准'] + 1).value == '绩效并列→比全量'
+    assert ws.cell(row=3, column=idx['门店排名基准'] + 1).value in (None, '')
+
+
+# ── 触发表记与 rules.py 一致性 ─────────────────────────────────────
+
+def _store_tie_records():
+    """5 人大店，末两名绩效并列且全量也并列 → 两人 rank 都是 4，无人 rank=5。"""
+    return [
+        {'工号': f'D{i}', '员工姓名': f'D{i}', '四级部门': '大店',
+         '双月合计': p, '双月合计_全量': f,
+         '门店参与人数': 5, '门店排名': r, '门店全量排名': r,
+         '省区参与人数': 5, '省区排名': r, '省区全量排名': r,
+         '新岗位名称': '产品专家', '触发识别': r >= 4}
+        for i, (p, f, r) in enumerate(
+            [(10, 10, 1), (8, 8, 2), (6, 6, 3), (2, 1, 4), (2, 1, 4)], 1)
+    ]
+
+
+def test_store_tie_marks_all_tied_last_place():
+    """末名并列时，两人都应打✓（旧逻辑用 sp-t+1 会一个都不打）。"""
+    ws, _, idx = _expert_detail_sheet(_store_tie_records())
+    marks = [ws.cell(row=r, column=idx['是否触发门店后15%'] + 1).value
+             for r in range(2, 7)]
+    assert marks[3] == '✓'
+    assert marks[4] == '✓'
+    assert marks[0] in (None, '')
+
+
+def test_new_employee_has_no_store_hit_mark():
+    ws, _, idx = _expert_detail_sheet([
+        {'工号': '1001', '员工姓名': '新人', '四级部门': '门店X', '是否新员工': True,
+         '双月合计': 0, '门店参与人数': 5, '门店排名': None},
+    ])
+    assert ws.cell(row=2, column=idx['是否触发门店后15%'] + 1).value in (None, '')

@@ -30,7 +30,8 @@ def load_prev_list(path: str, sheet_name: str = None) -> set:
     """
     从公示表 Excel 中提取"进入能力提升计划名单"那一节的工号集合（标准化，去前导零）。
     工号固定在第 5 列（E 列，index=4）。
-    只取标题行含"进入"或"新进入"之后、下一个标题行之前的工号，排除"未出营"一节。
+    只取标题行含"进入"之后、下一个标题行之前的工号，排除"未出营"一节。
+    找不到"进入"节时返回空集合（不退化为读全部，避免把未出营人员误带入）。
     sheet_name 指定时只读该 Sheet，否则遍历所有 Sheet。
     """
     ids = set()
@@ -41,32 +42,27 @@ def load_prev_list(path: str, sheet_name: str = None) -> set:
             df = pd.read_excel(xl, sheet_name=sn, header=None, dtype=str)
             if df.shape[1] < 5:
                 continue
-            col_e = df.iloc[:, 4]
 
-            # 找"进入能力提升"节的起始行（标题行）
+            # 找"进入能力提升"节的起始行：只看 A 列（合并标题行），排除"未出营"
             section_start = None
             for i, row in df.iterrows():
-                cell_text = ' '.join(str(v) for v in row if pd.notna(v))
-                if '进入' in cell_text and ('能力提升' in cell_text or '提升' in cell_text):
-                    if '未出营' not in cell_text:
+                a_val = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ''
+                if '进入' in a_val and ('能力提升' in a_val or '提升' in a_val):
+                    if '未出营' not in a_val:
                         section_start = i
                         break
 
             if section_start is None:
-                # 找不到分节标记，退化为读全部工号
-                for val in col_e.dropna():
-                    norm = normalize_id(val)
-                    if norm:
-                        ids.add(norm)
+                # 找不到"进入"节，跳过该 Sheet，不退化读全部
                 continue
 
-            # 从节起始行的下一行开始，读到文件末或下一个标题行（含"名单"且行内工号为空）
+            # 从节起始行的下一行开始，读到文件末或下一个 A 列标题行
             for i in range(section_start + 1, len(df)):
                 row = df.iloc[i]
                 e_val = str(row.iloc[4]) if pd.notna(row.iloc[4]) else ''
-                # 如果 A 列内容含"名单"或"未出营"，认为是新 section，停止
                 a_val = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ''
-                if ('名单' in a_val or '未出营' in a_val) and normalize_id(e_val) is None:
+                # A 列含"名单"且 E 列不是工号 → 遇到新 section，停止
+                if '名单' in a_val and normalize_id(e_val) is None:
                     break
                 norm = normalize_id(e_val)
                 if norm:
