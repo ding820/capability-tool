@@ -110,9 +110,12 @@ def _build_expert_detail_sheet(wb, period_label: str,
         '序号', '战区', '城市部', '门店', '工号', '姓名', '岗位类别', '职级',
         '入职日期', '是否新员工',
         '月1净锁单', '月2净锁单', '双月合计',
-        '门店总人数', '门店参与人数(剔新员工)', '门店排名',
+        '月1全量订单', '月2全量订单', '双月全量合计',
+        '门店总人数', '门店参与人数(剔新员工)',
+        '门店排名', '门店全量排名', '门店排名基准',
         '门店后15%阈值', '是否触发门店后15%',
-        '省区参与人数(剔新员工)', '省区排名',
+        '省区参与人数(剔新员工)',
+        '省区排名', '省区全量排名', '省区排名基准',
         '省区后15%阈值', '是否触发省区后15%',
         '省区后50%阈值(高级专家)', '是否触发省区后50%',
         '触发识别', '识别原因',
@@ -123,6 +126,26 @@ def _build_expert_detail_sheet(wb, period_label: str,
     gold_fill   = PatternFill('solid', fgColor=_GOLD)
     yellow_fill = PatternFill('solid', fgColor='FFF2CC')
 
+    # 预计算各门店的真实排名阈值，与 rules.py 保持一致：
+    # 取实际排名列表的倒数第 t 个值，而非 sp - t + 1。
+    # 绩效并列时末几名共享同一 rank（如 5 人店末两名都是 4），
+    # 用 sp-t+1 会算出不存在的 rank=5，导致整行都不打勾。
+    _store_ranks = {}
+    for rec in expert_records:
+        if rec.get('是否新员工'):
+            continue
+        _sid = rec.get('四级部门', '')
+        _rv  = rec.get('门店排名')
+        if _rank_ok(_rv):
+            _store_ranks.setdefault(_sid, []).append(int(_rv))
+    store_rank_thresholds = {}
+    store_rank_max = {}
+    for _sid, _rs in _store_ranks.items():
+        _rs.sort()
+        _t = max(1, round(len(_rs) * 0.15))
+        store_rank_thresholds[_sid] = _rs[max(0, len(_rs) - _t)]
+        store_rank_max[_sid] = _rs[-1]
+
     for i, rec in enumerate(expert_records, 1):
         is_new    = rec.get('是否新员工', False)
         triggered = rec.get('触发识别', False)
@@ -132,6 +155,10 @@ def _build_expert_detail_sheet(wb, period_label: str,
         prov_part    = rec.get('省区参与人数', 0) or 0
         store_rank   = rec.get('门店排名')
         prov_rank    = rec.get('省区排名')
+        store_full   = rec.get('门店全量排名')
+        prov_full    = rec.get('省区全量排名')
+        store_basis  = rec.get('门店排名基准', '')
+        prov_basis   = rec.get('省区排名基准', '')
         is_senior    = rec.get('新岗位名称', '') == '高级产品专家'
         is_small     = store_part <= 3
 
@@ -144,19 +171,24 @@ def _build_expert_detail_sheet(wb, period_label: str,
         bottom15_prov  = prov_part  - thresh15_prov  + 1 if thresh15_prov  else None
         bottom50_prov  = prov_part  - thresh50_prov  + 1 if thresh50_prov  else None
 
+        _sr_thresh = store_rank_thresholds.get(rec.get('四级部门', ''))
+
         if is_small:
             hit_store15 = False
             # 小店：省区后15% 且 门店最后一名（两个条件同时满足）
             hit_prov15  = (_rank_ok(prov_rank) and bottom15_prov is not None
                            and int(prov_rank) >= bottom15_prov
-                           and _rank_ok(store_rank) and int(store_rank) == store_part)
+                           and _rank_ok(store_rank)
+                           and store_rank_max.get(rec.get('四级部门', '')) is not None
+                           and int(store_rank) == store_rank_max[rec.get('四级部门', '')])
         else:
-            hit_store15 = (_rank_ok(store_rank) and bottom15_store is not None
-                           and int(store_rank) >= bottom15_store)
+            # 用实际排名阈值，与 rules.py 一致（支持并列末名）
+            hit_store15 = (_rank_ok(store_rank) and _sr_thresh is not None
+                           and int(store_rank) >= _sr_thresh)
             hit_prov15  = False
 
-        hit_store15_senior = (is_senior and _rank_ok(store_rank) and bottom15_store is not None
-                              and int(store_rank) >= bottom15_store)
+        hit_store15_senior = (is_senior and _rank_ok(store_rank) and _sr_thresh is not None
+                              and int(store_rank) >= _sr_thresh)
         hit_prov50 = (is_senior and _rank_ok(prov_rank) and bottom50_prov is not None
                       and int(prov_rank) >= bottom50_prov)
 
@@ -174,13 +206,20 @@ def _build_expert_detail_sheet(wb, period_label: str,
             rec.get('月1净锁单', ''),
             rec.get('月2净锁单', ''),
             rec.get('双月合计', ''),
+            rec.get('月1净锁单_全量', ''),
+            rec.get('月2净锁单_全量', ''),
+            rec.get('双月合计_全量', ''),
             store_total if store_total else '',
             store_part if store_part else '',
             store_rank if _rank_ok(store_rank) else '',
+            store_full if _rank_ok(store_full) else '',
+            store_basis,
             f'后{thresh15_store}名' if not is_small and thresh15_store else ('→看省区' if is_small else ''),
             '✓' if hit_store15 else ('✓(高专)' if hit_store15_senior else ''),
             prov_part if prov_part else '',
             prov_rank if _rank_ok(prov_rank) else '',
+            prov_full if _rank_ok(prov_full) else '',
+            prov_basis,
             f'后{thresh15_prov}名' if thresh15_prov else '',
             '✓' if hit_prov15 else '',
             f'后{thresh50_prov}名' if thresh50_prov else '',

@@ -61,6 +61,10 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
     result['门店排名']     = None
     result['省区排名']     = None   # 全省口径（小店15%、高专50%共用）
     result['省区全员排名'] = None   # 同上，兼容列名
+    result['门店全量排名'] = None   # 只看全量定单的排名，供核对并列
+    result['省区全量排名'] = None
+    result['门店排名基准'] = ''     # 绩效并列时标记"靠全量分先后"
+    result['省区排名基准'] = ''
     result['触发识别']     = False
     result['识别原因']     = ''
 
@@ -75,27 +79,43 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
         )
         return key.rank(method='min', ascending=False).astype(int)
 
+    def _rank_full(grp: pd.DataFrame) -> pd.Series:
+        """只看全量定单的参考排名，用于核对并列时全量是否真的分出了先后。"""
+        return grp['双月合计_全量'].rank(method='min', ascending=False).astype(int)
+
+    def _basis(grp: pd.DataFrame) -> pd.Series:
+        """绩效并列时排名靠全量分先后 → 标记；否则留空。"""
+        dup = grp['双月合计'].duplicated(keep=False)
+        return pd.Series(
+            ['绩效并列→比全量' if d else '' for d in dup], index=grp.index)
+
     # 门店排名
     for _, grp in active.groupby('四级部门'):
         ranks = _rank(grp)
-        result.loc[ranks.index, '门店排名'] = ranks
+        result.loc[ranks.index, '门店排名']     = ranks
+        result.loc[ranks.index, '门店全量排名'] = _rank_full(grp)
+        result.loc[ranks.index, '门店排名基准'] = _basis(grp)
 
     # 省区排名：全省所有非新员工产品专家作为一个统一排名池
     prov_ranks = _rank(active)
     result.loc[prov_ranks.index, '省区排名']     = prov_ranks
     result.loc[prov_ranks.index, '省区全员排名'] = prov_ranks
+    result.loc[prov_ranks.index, '省区全量排名'] = _rank_full(active)
+    result.loc[prov_ranks.index, '省区排名基准'] = _basis(active)
 
     # ── 触发判断 ──────────────────────────────────────────────────────
     # 预计算各门店的排名阈值，以处理并列末名的情况：
     # 取已有排名列表中倒数第 t 个实际值作为阈值，而非直接用 sp - t + 1。
     # 例：5人门店 t=1，若末两名并列 rank=4，则阈值=4，两人均满足 rank>=4。
     store_rank_thresholds = {}
+    store_rank_max = {}
     for _sid, _grp in active.groupby('四级部门'):
         _sp = len(_grp)
         _t  = max(1, round(_sp * 0.15))
         _rs = sorted([int(v) for v in result.loc[_grp.index, '门店排名'] if _rank_ok(v)])
         if _rs:
             store_rank_thresholds[_sid] = _rs[max(0, len(_rs) - _t)]
+            store_rank_max[_sid] = _rs[-1]
 
     triggered = {i: False for i in result.index}
     reasons   = {i: ''    for i in result.index}
@@ -133,11 +153,14 @@ def identify_experts(df: pd.DataFrame, period_end: pd.Timestamp) -> pd.DataFrame
                         triggered[i] = True
                         reasons[i]   = f'绩效双月定单量门店排名后15%'
             else:
-                # 小店：省区后15%，且是该门店中省区排名最末的那一个（同一排序键，等价于门店最后1名）
+                # 小店：省区后15%，且是该门店中省区排名最末的那一个
+                # 用门店实际最大排名值判断"末名"，兼容末几名并列（并列时无 rank==sp）
                 if pa > 0 and sp > 0:
                     t_prov  = max(1, round(pa * 0.15))
                     hit_prov = _rank_ok(prov_rv) and int(prov_rv) >= pa - t_prov + 1
-                    hit_last = _rank_ok(store_rv) and int(store_rv) == sp
+                    _store_max = store_rank_max.get(row['四级部门'])
+                    hit_last = (_rank_ok(store_rv) and _store_max is not None
+                                and int(store_rv) == _store_max)
                     if hit_prov and hit_last:
                         triggered[i] = True
                         reasons[i]   = f'绩效双月定单量省区排名后15%'

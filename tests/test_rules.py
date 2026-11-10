@@ -94,6 +94,82 @@ def test_senior_expert_province_50_percent_triggers():
     assert high14_row.iloc[0]['触发识别'] == False
 
 
+def _make_expert_df_with_full(rows):
+    """rows: list of (工号, 门店, 绩效月1, 绩效月2, 全量月1, 全量月2)"""
+    records = []
+    for r in rows:
+        records.append({
+            '工号': r[0], '员工姓名': f'E{r[0]}', '四级部门': r[1], '三级部门': '省区A',
+            '新职级': 13, '入职日期': pd.Timestamp('2020-01-01'),
+            '月1净锁单': r[2], '月2净锁单': r[3],
+            '月1净锁单_全量': r[4], '月2净锁单_全量': r[5],
+            '新岗位名称': '产品专家', '岗位类别': '产品专家', '二级部门': '湖北战区',
+        })
+    return pd.DataFrame(records)
+
+
+def test_full_volume_breaks_performance_ties():
+    """绩效双月合计并列（都是10）时，按全量定单分先后，并标记排名基准。"""
+    df = _make_expert_df_with_full([
+        ('1', '门店X', 5, 5, 50, 0),   # 绩效10，全量50 → 第1
+        ('2', '门店X', 5, 5, 40, 0),   # 绩效10，全量40 → 第2
+        ('3', '门店X', 5, 5, 30, 0),   # 绩效10，全量30 → 第3
+    ])
+    r = identify_experts(df, pd.Timestamp('2026-06-30')).set_index('工号')
+    assert list(r['双月合计']) == [10, 10, 10]
+    assert r.loc['1', '门店排名'] == 1
+    assert r.loc['2', '门店排名'] == 2
+    assert r.loc['3', '门店排名'] == 3
+    assert r.loc['1', '门店全量排名'] == 1
+    assert r.loc['3', '省区全量排名'] == 3
+    assert all(r['门店排名基准'] == '绩效并列→比全量')
+    assert all(r['省区排名基准'] == '绩效并列→比全量')
+
+
+def test_no_tie_leaves_rank_basis_blank():
+    """绩效不并列时，排名基准留空，全量排名仍照常给出。"""
+    df = _make_expert_df_with_full([
+        ('1', '门店X', 10, 0, 10, 0),
+        ('2', '门店X', 8, 0, 800, 0),   # 全量很高，但绩效低，仍排第2
+    ])
+    r = identify_experts(df, pd.Timestamp('2026-06-30')).set_index('工号')
+    assert r.loc['1', '门店排名'] == 1
+    assert r.loc['2', '门店排名'] == 2
+    assert r.loc['2', '门店全量排名'] == 1
+    assert r.loc['1', '门店排名基准'] == ''
+    assert r.loc['1', '省区排名基准'] == ''
+
+
+def test_small_store_tied_last_place_triggers():
+    """小店末两名并列时，两人门店排名都是2（无 rank=3），仍应被识别为门店末名。"""
+    rows = []
+    # 128 个放不进小店的大店人员，把省区人数撑到 131
+    for i in range(1, 129):
+        rows.append((str(i), f'P{i}', f'大店{i}', '省区A', 13, '2020-01-01', 300 - i, 0))
+    # 小店 3 人：绩效并列末名，但全量不同 → 经全量区分后仍是并列末名
+    rows += [
+        ('201', 'S1', '小店X', '省区A', 13, '2020-01-01', 5, 0),
+        ('202', 'S2', '小店X', '省区A', 13, '2020-01-01', 1, 0),
+        ('203', 'S3', '小店X', '省区A', 13, '2020-01-01', 1, 0),
+    ]
+    df = _make_expert_df(rows)
+    # 全量列必须整列赋值，否则未赋值的行会是 NaN（rules 里会参与元组排序）
+    df['月1净锁单_全量'] = df['月1净锁单']
+    df['月2净锁单_全量'] = 0
+    # 末两名在绩效并列的基础上全量也相同 → 共享 rank=2，不存在 rank=3
+    df.loc[df['工号'].isin(['202', '203']), '月1净锁单_全量'] = 7
+    df.loc[df['工号'] == '201', '月1净锁单_全量'] = 9
+
+    r = identify_experts(df, pd.Timestamp('2026-06-30')).set_index('工号')
+    assert int(r.loc['202', '门店排名']) == 2
+    assert int(r.loc['203', '门店排名']) == 2
+    assert int(r.loc['202', '省区参与人数']) == 131
+    assert bool(r.loc['202', '触发识别']) is True
+    assert bool(r.loc['203', '触发识别']) is True
+    # 门店第一名不是末名，即使省区排名也可能靠后，也不触发
+    assert bool(r.loc['201', '触发识别']) is False
+
+
 def test_new_employee_excluded():
     """入职3个月内的新员工不参与排名，不触发。"""
     rows = [
