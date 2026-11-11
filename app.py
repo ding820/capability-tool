@@ -5,7 +5,7 @@ import os, tempfile, shutil
 from data_loader import load_roster, load_expert_orders, load_expert_vehicles, load_manager_data, find_manager_cols, load_prev_list, format_display_id
 from rules import identify_experts, identify_managers, round_half_up
 from history import save_period, get_previous_ids
-from exporter import build_output_excel
+from exporter import build_output_excel, sort_records
 
 HISTORY_PATH = os.path.join(os.path.dirname(__file__), 'history.json')
 
@@ -387,6 +387,10 @@ if st.button('生成能力提升名单', type='primary'):
                 not_graduated = [r for r in all_triggered if r['工号'] in prev_ids_display]
                 new_entries    = [r for r in all_triggered if r['工号'] not in prev_ids_display]
 
+                # 与导出表一致：门店 → 双月合计降序 → 双月全量合计降序
+                not_graduated = sort_records(not_graduated)
+                new_entries   = sort_records(new_entries)
+
             except Exception as e:
                 st.error(f'计算识别结果时出错：{e}')
                 st.stop()
@@ -397,20 +401,35 @@ if st.button('生成能力提升名单', type='primary'):
     st.success(f'识别完成：未出营 {len(not_graduated)} 人，新进入 {len(new_entries)} 人')
 
     # ── 结果名单 ──────────────────────────────────────────
-    DISPLAY_COLS = ['工号', '员工姓名', '四级部门', '新岗位名称', '新职级', '识别原因']
+    DISPLAY_COLS = ['工号', '员工姓名', '四级部门', '新岗位名称', '新职级',
+                    '双月合计', '双月全量合计', '识别原因']
+
+    def _display_frame(records):
+        df = pd.DataFrame(records)
+        # 主管记录没有定单量字段，reindex 后补空列
+        df = df.reindex(columns=[c for c in DISPLAY_COLS if c != '双月全量合计'])
+        if '双月合计_全量' in df.columns:
+            df = df.rename(columns={'双月合计_全量': '双月全量合计'})
+        else:
+            df['双月全量合计'] = ''
+        df = df.reindex(columns=DISPLAY_COLS).astype(object)
+        # 缺失值显示为空，不显示 0
+        for col in ('双月合计', '双月全量合计'):
+            df[col] = df[col].where(df[col].notna(), '')
+        return df
 
     col_a, col_b = st.columns(2)
     with col_a:
         st.subheader(f'未出营名单（{len(not_graduated)} 人）')
         if not_graduated:
-            st.dataframe(pd.DataFrame(not_graduated)[DISPLAY_COLS], use_container_width=True)
+            st.dataframe(_display_frame(not_graduated), use_container_width=True)
         else:
             st.info('无未出营人员')
 
     with col_b:
         st.subheader(f'新进入名单（{len(new_entries)} 人）')
         if new_entries:
-            st.dataframe(pd.DataFrame(new_entries)[DISPLAY_COLS], use_container_width=True)
+            st.dataframe(_display_frame(new_entries), use_container_width=True)
         else:
             st.info('无新进入人员')
 

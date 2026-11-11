@@ -44,6 +44,33 @@ def _rank_ok(v) -> bool:
     return v is not None and not (isinstance(v, float) and math.isnan(v))
 
 
+def _num(v) -> float:
+    """把单元格值转成可比较的数值，空值/非数值按 0 处理。"""
+    if v is None or v == '':
+        return 0.0
+    try:
+        f = float(v)
+        return 0.0 if math.isnan(f) else f
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def sort_records(records: List[Dict]) -> List[Dict]:
+    """按 门店（升序）→ 双月合计（降序）→ 双月全量合计（降序）排序。
+
+    主管记录没有双月定单字段，按 0 处理，会排在同门店的产品专家之后。
+    """
+    return sorted(
+        records,
+        key=lambda r: (
+            str(r.get('四级部门') or ''),
+            -_num(r.get('双月合计')),
+            -_num(r.get('双月合计_全量')),
+            str(r.get('工号') or ''),
+        ),
+    )
+
+
 # ── 公示表 Sheet ────────────────────────────────────────────────────────────
 
 def _build_notice_sheet(wb, period_label: str, improve_period: str,
@@ -65,7 +92,7 @@ def _build_notice_sheet(wb, period_label: str, improve_period: str,
     _header_style(ws, row, len(hdr_grad))
     row += 1
 
-    for i, rec in enumerate(not_graduated, 1):
+    for i, rec in enumerate(sort_records(not_graduated), 1):
         _write_row(ws, row, [
             i, rec.get('二级部门', ''), rec.get('三级部门', ''), rec.get('四级部门', ''),
             rec.get('工号', ''), rec.get('员工姓名', ''),
@@ -89,7 +116,7 @@ def _build_notice_sheet(wb, period_label: str, improve_period: str,
     _header_style(ws, row, len(hdr_entry))
     row += 1
 
-    for i, rec in enumerate(new_entries, 1):
+    for i, rec in enumerate(sort_records(new_entries), 1):
         _write_row(ws, row, [
             i, rec.get('二级部门', ''), rec.get('三级部门', ''), rec.get('四级部门', ''),
             rec.get('工号', ''), rec.get('员工姓名', ''),

@@ -6,7 +6,7 @@ import io
 import openpyxl
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from exporter import build_output_excel
+from exporter import build_output_excel, sort_records
 
 
 def _sample_records():
@@ -153,3 +153,47 @@ def test_new_employee_has_no_store_hit_mark():
          '双月合计': 0, '门店参与人数': 5, '门店排名': None},
     ])
     assert ws.cell(row=2, column=idx['是否触发门店后15%'] + 1).value in (None, '')
+
+
+# ── 名单排序：门店 → 双月合计降序 → 双月全量合计降序 ─────────────────
+
+def _unsorted_entries():
+    return [
+        {'工号': 'E1', '员工姓名': '甲', '四级部门': '武汉A店',
+         '双月合计': 10, '双月合计_全量': 100},
+        {'工号': 'E2', '员工姓名': '乙', '四级部门': '恩施B店',
+         '双月合计': 30, '双月合计_全量': 200},
+        {'工号': 'E3', '员工姓名': '丙', '四级部门': '武汉A店',
+         '双月合计': 12, '双月合计_全量': 80},
+        {'工号': 'E4', '员工姓名': '丁', '四级部门': '武汉A店',
+         '双月合计': 12, '双月合计_全量': 150},
+        {'工号': 'E5', '员工姓名': '戊', '四级部门': '武汉A店',
+         '双月合计': 5, '双月合计_全量': 500},
+    ]
+
+
+def test_sort_records_by_store_then_totals_desc():
+    order = [r['工号'] for r in sort_records(_unsorted_entries())]
+    # 门店升序：恩施B店 < 武汉A店；店内 双月合计 DESC，再按双月全量合计 DESC
+    assert order == ['E2', 'E4', 'E3', 'E1', 'E5']
+
+
+def test_sort_records_handles_missing_and_nan():
+    recs = [
+        {'工号': 'M1', '四级部门': '武汉A店', '双月合计': float('nan'),
+         '双月合计_全量': None},
+        {'工号': 'E1', '四级部门': '武汉A店', '双月合计': 1, '双月合计_全量': 1},
+    ]
+    assert [r['工号'] for r in sort_records(recs)] == ['E1', 'M1']
+
+
+def test_notice_sheet_rows_are_sorted():
+    buf = build_output_excel('7月', '7月-8月', [], _unsorted_entries())
+    wb = openpyxl.load_workbook(buf)
+    ws = wb['7月能力提升计划最终名单-公示']
+    # 定位"进入能力提升计划人员名单"节：序号列从 1 开始的那一行
+    start = next(r for r in range(1, ws.max_row + 1)
+                 if ws.cell(row=r, column=1).value == 1)
+    names = [ws.cell(row=r, column=6).value for r in range(start, start + 5)]
+    assert names == ['乙', '丁', '丙', '甲', '戊']
+    assert [ws.cell(row=r, column=1).value for r in range(start, start + 5)] == [1, 2, 3, 4, 5]
